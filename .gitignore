@@ -33,6 +33,9 @@ yarn-error.*
 # local env files
 .env*.local
 
+# Abacus AI agent local config
+.abacusai/
+
 # typescript
 *.tsbuildinfo
 

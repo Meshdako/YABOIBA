@@ -7,9 +7,10 @@ type SplitFlapTextProps = {
   value: string;
   style?: object;
   textStyle?: object;
+  numberOfLines?: number;
 };
 
-export function SplitFlapText({ value, style, textStyle }: SplitFlapTextProps) {
+export function SplitFlapText({ value, style, textStyle, numberOfLines = 1 }: SplitFlapTextProps) {
   const [display, setDisplay] = React.useState(value);
   const timersRef = React.useRef<ReturnType<typeof setTimeout>[]>([]);
 
@@ -57,7 +58,7 @@ export function SplitFlapText({ value, style, textStyle }: SplitFlapTextProps) {
 
   return (
     <View style={[styles.container, style]}>
-      <Text style={[styles.text, textStyle]} numberOfLines={1}>
+      <Text style={[styles.text, textStyle]} numberOfLines={numberOfLines}>
         {display}
       </Text>
     </View>

@@ -643,3 +643,133 @@ export async function setSplitPaid(
     splitId
   );
 }
+
+export type MonthlyStat = {
+  month: string;
+  spending: number;
+  income: number;
+  balance: number;
+};
+
+export async function getMonthlyStats(
+  db: SQLite.SQLiteDatabase,
+  accountId: number,
+  months: number
+): Promise<MonthlyStat[]> {
+  const rows = await db.getAllAsync<{ month: string; spending: number; income: number }>(
+    `SELECT substr(date, 1, 7) AS month,
+            SUM(CASE WHEN "isIncome" = 0 THEN amount ELSE 0 END) AS spending,
+            SUM(CASE WHEN "isIncome" = 1 THEN amount ELSE 0 END) AS income
+     FROM record
+     WHERE "accountId" = ?
+     GROUP BY substr(date, 1, 7)
+     ORDER BY month`,
+    accountId
+  );
+
+  const now = new Date();
+  const result: MonthlyStat[] = [];
+  let balance = 0;
+  const rowMap = new Map(rows.map((r) => [r.month, r]));
+
+  for (let i = months - 1; i >= 0; i--) {
+    const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+    const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+    const row = rowMap.get(key);
+    const spending = row?.spending ?? 0;
+    const income = row?.income ?? 0;
+    balance += income - spending;
+    result.push({ month: key, spending, income, balance });
+  }
+
+  return result;
+}
+
+const DEMO_TAG = 'demo';
+
+const DEMO_EXPENSES: [string, number, number][] = [
+  ['Supermercado', 18000, 65000],
+  ['Almuerzo', 4500, 12000],
+  ['Bencina', 20000, 40000],
+  ['Café', 2000, 5000],
+  ['Cuenta de luz', 25000, 45000],
+  ['Internet', 22000, 28000],
+  ['Cine', 6000, 15000],
+  ['Farmacia', 5000, 25000],
+  ['Transporte', 1500, 8000],
+  ['Ropa', 15000, 60000],
+];
+
+export async function seedDemoTransactions(
+  db: SQLite.SQLiteDatabase,
+  accountId: number
+): Promise<number> {
+  const categories = await db.getAllAsync<{ id: number }>('SELECT id FROM category');
+  const pickCategory = (i: number) =>
+    categories.length > 0 ? categories[i % categories.length].id : null;
+
+  let seed = 7;
+  const rand = () => {
+    seed = (seed * 16807) % 2147483647;
+    return seed / 2147483647;
+  };
+
+  const now = new Date();
+  let count = 0;
+  await db.withTransactionAsync(async () => {
+    for (let m = 0; m < 6; m += 1) {
+      const income = new Date(now.getFullYear(), now.getMonth() - m, 1, 9, 0, 0);
+      if (income <= now) {
+        await insertDemo(db, accountId, 'Sueldo', 900000 + Math.round(rand() * 100000), true, null, income);
+        count += 1;
+      }
+      const expenses = 8 + Math.floor(rand() * 5);
+      for (let e = 0; e < expenses; e += 1) {
+        const [label, min, max] = DEMO_EXPENSES[Math.floor(rand() * DEMO_EXPENSES.length)];
+        const day = 2 + Math.floor(rand() * 26);
+        const when = new Date(now.getFullYear(), now.getMonth() - m, day, 8 + Math.floor(rand() * 13), Math.floor(rand() * 60), 0);
+        if (when > now) {
+          continue;
+        }
+        const amount = Math.round((min + rand() * (max - min)) / 100) * 100;
+        await insertDemo(db, accountId, label, amount, false, pickCategory(Math.floor(rand() * 1000)), when);
+        count += 1;
+      }
+    }
+  });
+  return count;
+}
+
+async function insertDemo(
+  db: SQLite.SQLiteDatabase,
+  accountId: number,
+  label: string,
+  amount: number,
+  isIncome: boolean,
+  categoryId: number | null,
+  when: Date
+): Promise<void> {
+  const iso = when.toISOString();
+  await db.runAsync(
+    `INSERT INTO record ("createdAt", "updatedAt", id, label, amount, date, "accountId", "categoryId", tags, "isInProgress", "isIncome", "isTransfer")
+     VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, 0, ?, 0)`,
+    iso,
+    iso,
+    label,
+    amount,
+    iso,
+    accountId,
+    categoryId,
+    DEMO_TAG,
+    isIncome ? 1 : 0
+  );
+}
+
+export async function clearDemoTransactions(db: SQLite.SQLiteDatabase): Promise<number> {
+  await db.runAsync(
+    `DELETE FROM split WHERE "recordId" IN (SELECT id FROM record WHERE tags = ?)`,
+    DEMO_TAG
+  );
+  const result = await db.runAsync('DELETE FROM record WHERE tags = ?', DEMO_TAG);
+  return result.changes;
+}

@@ -13,7 +13,7 @@ export {
 } from 'expo-router';
 
 export const unstable_settings = {
-  initialRouteName: 'index',
+  initialRouteName: '(tabs)',
 };
 
 SplashScreen.preventAutoHideAsync();
@@ -41,9 +41,14 @@ export default function RootLayout() {
   return (
     <SQLiteProvider databaseName="bill.db" onInit={initDatabase} useSuspense>
       <Stack>
-        <Stack.Screen name="index" options={{ headerShown: false }} />
+        <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
         <Stack.Screen name="account/index" options={{ title: 'Transacciones' }} />
         <Stack.Screen name="account/[id]" options={{ title: 'Detalle' }} />
+        <Stack.Screen
+          name="edit/[id]"
+          options={{ headerShown: false, gestureEnabled: false, animation: 'fade' }}
+        />
+        <Stack.Screen name="about" options={{ title: 'Acerca de mí' }} />
         <Stack.Screen name="accounts" options={{ title: 'Cuentas' }} />
         <Stack.Screen name="modal" options={{ title: 'Información', presentation: 'modal' }} />
       </Stack>

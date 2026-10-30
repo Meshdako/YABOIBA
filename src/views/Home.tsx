@@ -2,7 +2,11 @@ import React from 'react';
 import { Link, router, useFocusEffect } from 'expo-router';
 import {
   Animated,
+  Keyboard,
+  KeyboardAvoidingView,
   Modal,
+  PanResponder,
+  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -13,20 +17,29 @@ import {
 import { useSQLiteContext } from 'expo-sqlite';
 
 import { ButtonsRow } from '@/src/components/ButtonsRow';
-import { SplitFlapText } from '@/src/components/SplitFlapText';
 import { SquareButton } from '@/src/components/SquareButton';
 import SplitModal, { type SplitDraft } from '@/src/components/SplitModal';
+import { Typewriter } from 'typewriter4react-native';
+import { RollingMoney } from '@/src/components/RollingMoney';
 import { DECIMAL_SEPARATOR, THOUSAND_SEPARATOR } from '@/src/config';
 import {
   saveRecord,
+  updateRecord,
+  getRecordById,
+  getSplitsByRecord,
   saveSplits,
   getActiveAccountId,
   getAccountById,
   getAccountBalance,
+  getAllAccounts,
+  setActiveAccountId,
   getAllCategories,
   type Account,
   type Category,
 } from '@/src/db';
+
+const CANCEL_LABEL = '✕';
+const MAX_DESCRIPTION = 50;
 
 const formatMoney = (value: number) => {
   const rounded = Math.round(value * 100) / 100;
@@ -55,7 +68,8 @@ const evaluateExpression = (expr: string): number => {
   return result;
 };
 
-export default function HomeScreen() {
+export default function HomeScreen({ editRecordId }: { editRecordId?: number }) {
+  const isEditMode = editRecordId !== undefined;
   const db = useSQLiteContext();
   const [expression, setExpression] = React.useState('0');
   const [description, setDescription] = React.useState('');
@@ -70,7 +84,10 @@ export default function HomeScreen() {
   const [splitModalVisible, setSplitModalVisible] = React.useState(false);
   const [splitDrafts, setSplitDrafts] = React.useState<SplitDraft[]>([]);
 
+  const [accounts, setAccounts] = React.useState<Account[]>([]);
+
   const loadAccount = React.useCallback(async () => {
+    setAccounts(await getAllAccounts(db));
     const id = await getActiveAccountId(db);
     if (id !== null) {
       const acc = await getAccountById(db, id);
@@ -81,6 +98,81 @@ export default function HomeScreen() {
       }
     }
   }, [db]);
+
+  const slideY = React.useRef(new Animated.Value(0)).current;
+  const slideOpacity = React.useRef(new Animated.Value(1)).current;
+  const switching = React.useRef(false);
+
+  const switchAccount = async (step: 1 | -1) => {
+    if (accounts.length < 2 || switching.current) {
+      return;
+    }
+    switching.current = true;
+    const index = accounts.findIndex((a) => a.id === activeAccount?.id);
+    const next = accounts[(index + step + accounts.length) % accounts.length];
+    await new Promise<void>((resolve) =>
+      Animated.parallel([
+        Animated.timing(slideY, { toValue: -step * 10, duration: 90, useNativeDriver: true }),
+        Animated.timing(slideOpacity, { toValue: 0, duration: 90, useNativeDriver: true }),
+      ]).start(() => resolve())
+    );
+    await setActiveAccountId(db, next.id);
+    await loadAccount();
+    slideY.setValue(step * 10);
+    Animated.parallel([
+      Animated.timing(slideY, { toValue: 0, duration: 130, useNativeDriver: true }),
+      Animated.timing(slideOpacity, { toValue: 1, duration: 130, useNativeDriver: true }),
+    ]).start(() => {
+      switching.current = false;
+    });
+  };
+  const switchAccountRef = React.useRef(switchAccount);
+  switchAccountRef.current = switchAccount;
+
+  const accountSwipe = React.useRef(
+    PanResponder.create({
+      onMoveShouldSetPanResponder: (_, g) =>
+        !isEditMode && Math.abs(g.dy) > 10 && Math.abs(g.dy) > Math.abs(g.dx),
+      onPanResponderRelease: (_, g) => {
+        if (g.dy <= -30) {
+          switchAccountRef.current(1);
+        } else if (g.dy >= 30) {
+          switchAccountRef.current(-1);
+        }
+      },
+    })
+  ).current;
+
+  const initialSplitsRef = React.useRef('[]');
+
+  React.useEffect(() => {
+    if (editRecordId === undefined) {
+      return;
+    }
+    (async () => {
+      const accountId = await getActiveAccountId(db);
+      if (accountId === null) {
+        router.back();
+        return;
+      }
+      const row = await getRecordById(db, accountId, editRecordId);
+      if (!row) {
+        router.back();
+        return;
+      }
+      const amountText = String(row.amount).replace('.', DECIMAL_SEPARATOR);
+      setExpression(row.isIncome ? amountText : `0-${amountText}`);
+      setDescription(row.label);
+      const cats = await getAllCategories(db);
+      setSelectedCategory(cats.find((c) => c.id === row.categoryId) ?? null);
+      const drafts = (await getSplitsByRecord(db, row.id)).map((sp) => ({
+        personId: sp.personId,
+        amount: sp.amount,
+      }));
+      initialSplitsRef.current = JSON.stringify(drafts);
+      setSplitDrafts(drafts);
+    })();
+  }, [db, editRecordId]);
 
   const loadCategories = React.useCallback(async () => {
     const cats = await getAllCategories(db);
@@ -110,6 +202,10 @@ export default function HomeScreen() {
   }, [hasOperation, totalReveal]);
 
   const handleDigitPress = (digit: string) => {
+    if (digit === CANCEL_LABEL) {
+      router.back();
+      return;
+    }
     setExpression((prev) => {
       const lastSign = Math.max(prev.lastIndexOf('+'), prev.lastIndexOf('-'));
       const current = lastSign === -1 ? prev : prev.slice(lastSign + 1);
@@ -152,6 +248,22 @@ export default function HomeScreen() {
 
   const handleCheck = async () => {
     const finalTotal = evaluateExpression(expression);
+    if (editRecordId !== undefined) {
+      if (finalTotal === 0) {
+        return;
+      }
+      await updateRecord(db, editRecordId, {
+        label: description.trim() || `Transacción ${new Date().toLocaleDateString('es-CL')}`,
+        amount: Math.abs(finalTotal),
+        isIncome: finalTotal > 0,
+        categoryId: selectedCategory?.id ?? null,
+      });
+      if (JSON.stringify(splitDrafts) !== initialSplitsRef.current) {
+        await saveSplits(db, editRecordId, splitDrafts);
+      }
+      router.back();
+      return;
+    }
     if (Math.abs(finalTotal) > 0 && activeAccount) {
       const label =
         description ||
@@ -174,6 +286,7 @@ export default function HomeScreen() {
 
     setExpression('0');
     setDescription('');
+    setSelectedCategory(null);
     setIsEditing(false);
     setSplitDrafts([]);
   };
@@ -195,28 +308,86 @@ export default function HomeScreen() {
     }
   };
 
+  const finishDescription = () => {
+    Keyboard.dismiss();
+    setIsEditing(false);
+  };
+
+  if (isEditing) {
+    return (
+      <KeyboardAvoidingView
+        style={styles.container}
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+      >
+        <Text style={styles.descriptionEditTitle}>Descripción</Text>
+        <TextInput
+          style={styles.descriptionEditInput}
+          value={description}
+          onChangeText={(text) => setDescription(text.replace(/\n/g, ' ').slice(0, MAX_DESCRIPTION))}
+          placeholder="Descripción del monto"
+          placeholderTextColor="#666"
+          autoFocus
+          multiline
+          numberOfLines={2}
+          maxLength={MAX_DESCRIPTION}
+          returnKeyType="done"
+          blurOnSubmit
+          onSubmitEditing={finishDescription}
+          onFocus={() => setIsFocused(true)}
+          onBlur={() => setIsFocused(false)}
+        />
+        <Text style={styles.descriptionCounter}>
+          {description.length}/{MAX_DESCRIPTION}
+        </Text>
+        <Pressable style={styles.descriptionDone} onPress={finishDescription}>
+          <Text style={styles.descriptionDoneText}>Listo</Text>
+        </Pressable>
+      </KeyboardAvoidingView>
+    );
+  }
+
   return (
     <View style={styles.container}>
       <View style={styles.headerRow}>
+        <View style={styles.accountSwipe} {...accountSwipe.panHandlers}>
         <Link href="/account" asChild>
-          <Pressable style={styles.accountButton}>
+          <Pressable
+            style={StyleSheet.flatten([styles.accountButton, isEditMode && styles.accountButtonEdit])}
+            disabled={isEditMode}
+          >
+            <Animated.View
+              style={[
+                styles.accountContent,
+                { opacity: slideOpacity, transform: [{ translateY: slideY }] },
+              ]}
+            >
             <Text style={styles.accountNameText}>
               {activeAccount?.name ?? 'Cuenta'}
             </Text>
-            <Text
-              style={[
-                styles.accountBalance,
-                balance >= 0 ? styles.income : styles.expense,
-              ]}
-            >
-              {savedFlash ? 'Guardado ✓' : `${balance >= 0 ? '+' : '-'}${formatMoney(Math.abs(balance))}`}
+            {savedFlash ? (
+              <Text style={[styles.accountBalance, styles.income]}>Guardado ✓</Text>
+            ) : (
+              <RollingMoney
+                value={balance}
+                text={`${balance >= 0 ? '+' : '-'}${formatMoney(Math.abs(balance))}`}
+                textStyle={[
+                  styles.accountBalance,
+                  balance >= 0 ? styles.income : styles.expense,
+                ]}
+              />
+            )}
+            <Text style={styles.accountSubtitle}>
+              {isEditMode ? 'Editando transacción' : 'Ver transacciones'}
             </Text>
-            <Text style={styles.accountSubtitle}>Ver transacciones</Text>
+            </Animated.View>
           </Pressable>
         </Link>
-        <Pressable style={styles.infoButton} onPress={() => router.push('/accounts')}>
-          <Text style={styles.infoText}>+</Text>
-        </Pressable>
+        </View>
+        {isEditMode ? null : (
+          <Pressable style={styles.infoButton} onPress={() => router.push('/accounts')}>
+            <Text style={styles.infoText}>+</Text>
+          </Pressable>
+        )}
       </View>
 
       <View style={styles.amountBox}>
@@ -234,31 +405,27 @@ export default function HomeScreen() {
         ]}
       >
         <Text style={styles.totalLabel}>Total</Text>
-        <Text style={[styles.totalText, total >= 0 ? styles.income : styles.expense]}>
-          ${formatMoney(total)}
-        </Text>
+        <RollingMoney
+          value={total}
+          text={`$${formatMoney(total)}`}
+          textStyle={[styles.totalText, total >= 0 ? styles.income : styles.expense]}
+        />
       </Animated.View>
 
       <View style={styles.descriptionBox}>
-        {isEditing ? (
-          <TextInput
-            style={styles.descriptionInput}
-            value={description}
-            onChangeText={setDescription}
-            placeholder="Descripción del monto"
-            placeholderTextColor="#666"
-            autoFocus
-            onFocus={() => setIsFocused(true)}
-            onBlur={() => setIsFocused(false)}
+        <Pressable style={styles.descriptionPressable} onPress={() => setIsEditing(true)}>
+          <Typewriter
+            key={description || 'Descripción del monto'}
+            text={description || 'Descripción del monto'}
+            speed="fastest"
+            typingDelayPerCharVariance={0}
+            hideCursorOnFinish={false}
+            cursorType="text_simple"
+            cursorStyle={{ color: '#7ee2a8', fontSize: 16, fontWeight: '600' }}
+            textStyle={styles.descriptionText}
+            containerStyle={styles.descriptionTypewriter}
           />
-        ) : (
-          <Pressable style={styles.descriptionPressable} onPress={() => setIsEditing(true)}>
-            <SplitFlapText
-              value={description || 'Descripción del monto'}
-              textStyle={styles.descriptionText}
-            />
-          </Pressable>
-        )}
+        </Pressable>
       </View>
 
       <Pressable
@@ -302,11 +469,11 @@ export default function HomeScreen() {
           onPressRightLabel={handleRightPress}
         />
         <ButtonsRow
-          labels={['', '0', DECIMAL_SEPARATOR]}
+          labels={[isEditMode ? CANCEL_LABEL : '', '0', DECIMAL_SEPARATOR]}
           onPressLabel={handleDigitPress}
           rightLabels={['⌫']}
           onPressRightLabel={handleRightPress}
-          disabledLabels={['']}
+          disabledLabels={isEditMode ? [] : ['']}
         />
       </View>
 
@@ -386,6 +553,15 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'space-between',
     marginBottom: 22,
+  },
+  accountSwipe: {
+    flex: 1,
+  },
+  accountButtonEdit: {
+    marginRight: 0,
+  },
+  accountContent: {
+    alignItems: 'center',
   },
   accountButton: {
     flex: 1,
@@ -495,6 +671,67 @@ const styles = StyleSheet.create({
     fontSize: 18,
     fontWeight: '600',
     padding: 0,
+  },
+  descriptionEditTitle: {
+    color: '#888',
+    fontSize: 14,
+    fontWeight: '600',
+    textTransform: 'uppercase',
+    letterSpacing: 1,
+    marginBottom: 12,
+  },
+  descriptionEditInput: {
+    width: '100%',
+    minHeight: 90,
+    maxHeight: 120,
+    color: '#fff',
+    fontSize: 20,
+    fontWeight: '600',
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#3b3b3b',
+    backgroundColor: '#111',
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    textAlignVertical: 'top',
+  },
+  descriptionCounter: {
+    color: '#666',
+    fontSize: 13,
+    textAlign: 'right',
+    marginTop: 6,
+    marginBottom: 16,
+  },
+  descriptionDone: {
+    width: '100%',
+    borderRadius: 12,
+    backgroundColor: '#2e5c43',
+    alignItems: 'center',
+    paddingVertical: 14,
+  },
+  descriptionDoneText: {
+    color: '#7ee2a8',
+    fontSize: 16,
+    fontWeight: '700',
+  },
+  descriptionTypewriter: {
+    width: '100%',
+  },
+  typewriterPreviewBox: {
+    width: '100%',
+    minHeight: 44,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#3b3b3b',
+    backgroundColor: '#111',
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    marginBottom: 10,
+  },
+  typewriterPreview: {
+    color: '#c9c9c9',
+    fontSize: 18,
+    fontWeight: '600',
   },
   descriptionText: {
     color: '#c9c9c9',

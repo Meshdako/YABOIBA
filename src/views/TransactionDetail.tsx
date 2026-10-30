@@ -1,17 +1,15 @@
 import React from 'react';
 import {
   Alert,
-  Modal,
   Pressable,
   ScrollView,
   StyleSheet,
   Switch,
   Text,
-  TextInput,
   View,
 } from 'react-native';
 import { useSQLiteContext } from 'expo-sqlite';
-import { useLocalSearchParams, router } from 'expo-router';
+import { useFocusEffect, useLocalSearchParams, router } from 'expo-router';
 import FontAwesome from '@expo/vector-icons/FontAwesome';
 
 import {
@@ -22,7 +20,6 @@ import {
   getSplitsByRecord,
   saveSplits,
   setSplitPaid,
-  updateRecord,
   deleteRecord,
   type RecordRow,
   type Category,
@@ -61,13 +58,7 @@ export default function TransactionDetailScreen() {
   const [record, setRecord] = React.useState<RecordRow | null>(null);
   const [accountName, setAccountName] = React.useState('');
   const [loading, setLoading] = React.useState(true);
-  const [editVisible, setEditVisible] = React.useState(false);
-  const [editLabel, setEditLabel] = React.useState('');
-  const [editAmount, setEditAmount] = React.useState('');
-  const [editIsIncome, setEditIsIncome] = React.useState(false);
-  const [editCategoryId, setEditCategoryId] = React.useState<number | null>(null);
   const [categories, setCategories] = React.useState<Category[]>([]);
-  const [categoryModalVisible, setCategoryModalVisible] = React.useState(false);
   const [splits, setSplits] = React.useState<Split[]>([]);
   const [splitModalVisible, setSplitModalVisible] = React.useState(false);
 
@@ -95,54 +86,17 @@ export default function TransactionDetailScreen() {
     setLoading(false);
   }, [db, id]);
 
-  React.useEffect(() => {
-    loadRecord();
-    loadCategories();
-  }, [loadRecord, loadCategories]);
-
-  const selectedCategory =
-    editCategoryId !== null
-      ? categories.find((c) => c.id === editCategoryId) ?? null
-      : null;
+  useFocusEffect(
+    React.useCallback(() => {
+      loadRecord();
+      loadCategories();
+    }, [loadRecord, loadCategories])
+  );
 
   const recordCategory =
     record?.categoryId !== null && record?.categoryId !== undefined
       ? categories.find((c) => c.id === record.categoryId) ?? null
       : null;
-
-  const openEdit = () => {
-    if (!record) {
-      return;
-    }
-    setEditLabel(record.label);
-    setEditAmount(formatMoney(record.amount));
-    setEditIsIncome(Boolean(record.isIncome));
-    setEditCategoryId(record.categoryId ?? null);
-    setEditVisible(true);
-  };
-
-  const handleSave = async () => {
-    if (!record) {
-      return;
-    }
-    const rawAmount = editAmount
-      .replace(new RegExp(`\\${THOUSAND_SEPARATOR}`, 'g'), '')
-      .replace(DECIMAL_SEPARATOR, '.');
-    const amount = parseFloat(rawAmount);
-    if (Number.isNaN(amount) || amount <= 0) {
-      Alert.alert('Error', 'Ingresa un monto válido mayor a cero.');
-      return;
-    }
-    const label = editLabel.trim() || record.label;
-    await updateRecord(db, record.id, {
-      label,
-      amount,
-      isIncome: editIsIncome,
-      categoryId: editCategoryId,
-    });
-    setEditVisible(false);
-    await loadRecord();
-  };
 
   const handleDelete = () => {
     Alert.alert(
@@ -199,7 +153,7 @@ export default function TransactionDetailScreen() {
     <ScrollView style={styles.container} contentContainerStyle={styles.content}>
       <View style={styles.headerRow}>
         <Text style={styles.headerTitle}>Detalle</Text>
-        <Pressable style={styles.editButton} onPress={openEdit}>
+        <Pressable style={styles.editButton} onPress={() => router.push(`/edit/${record.id}`)}>
           <FontAwesome name="pencil" size={16} color="#7ee2a8" />
           <Text style={styles.editText}>Editar</Text>
         </Pressable>
@@ -247,12 +201,12 @@ export default function TransactionDetailScreen() {
 
         <View style={styles.metaRow}>
           <Text style={styles.metaLabel}>Categoría</Text>
-          <View style={styles.metaCategory}>
+          <Text style={styles.metaValue} numberOfLines={1}>
             {recordCategory ? (
-              <View style={[styles.categoryDot, { backgroundColor: recordCategory.color }]} />
+              <Text style={{ color: recordCategory.color }}>{'\u25CF '}</Text>
             ) : null}
-            <Text style={styles.metaValue}>{recordCategory?.name ?? 'Sin categoría'}</Text>
-          </View>
+            {recordCategory?.name ?? 'Sin categoría'}
+          </Text>
         </View>
 
         <View style={styles.metaRow}>
@@ -310,138 +264,6 @@ export default function TransactionDetailScreen() {
         <FontAwesome name="trash" size={18} color="#e87e7e" />
         <Text style={styles.deleteText}>Eliminar transacción</Text>
       </Pressable>
-
-      <Modal
-        visible={editVisible}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setEditVisible(false)}
-      >
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalCard}>
-            <Text style={styles.modalTitle}>Editar transacción</Text>
-
-            <Text style={styles.modalLabel}>Descripción</Text>
-            <TextInput
-              style={styles.modalInput}
-              value={editLabel}
-              onChangeText={setEditLabel}
-              placeholder="Descripción"
-              placeholderTextColor="#666"
-              autoFocus
-            />
-
-            <Text style={styles.modalLabel}>Monto</Text>
-            <TextInput
-              style={styles.modalInput}
-              value={editAmount}
-              onChangeText={setEditAmount}
-              placeholder="0,00"
-              placeholderTextColor="#666"
-              keyboardType="decimal-pad"
-            />
-
-            <Text style={styles.modalLabel}>Categoría</Text>
-            <Pressable
-              style={styles.modalInput}
-              onPress={() => setCategoryModalVisible(true)}
-            >
-              <View style={styles.modalCategoryRow}>
-                <View
-                  style={[
-                    styles.categoryDot,
-                    { backgroundColor: selectedCategory?.color ?? '#666' },
-                  ]}
-                />
-                <Text style={styles.modalCategoryText}>
-                  {selectedCategory?.name ?? 'Sin categoría'}
-                </Text>
-              </View>
-            </Pressable>
-
-            <View style={styles.typeRow}>
-              <Text style={styles.modalLabel}>Tipo</Text>
-              <View style={styles.typeToggle}>
-                <Text style={[styles.typeText, !editIsIncome && styles.typeActive]}>
-                  Gasto
-                </Text>
-                <Switch
-                  value={editIsIncome}
-                  onValueChange={setEditIsIncome}
-                  trackColor={{ false: '#5c2e2e', true: '#2e5c43' }}
-                  thumbColor={editIsIncome ? '#7ee2a8' : '#e87e7e'}
-                />
-                <Text style={[styles.typeText, editIsIncome && styles.typeActive]}>
-                  Ingreso
-                </Text>
-              </View>
-            </View>
-
-            <View style={styles.modalActions}>
-              <Pressable
-                style={styles.cancelButton}
-                onPress={() => setEditVisible(false)}
-              >
-                <Text style={styles.cancelText}>Cancelar</Text>
-              </Pressable>
-              <Pressable style={styles.confirmButton} onPress={handleSave}>
-                <Text style={styles.confirmText}>Guardar</Text>
-              </Pressable>
-            </View>
-          </View>
-        </View>
-      </Modal>
-
-      <Modal
-        visible={categoryModalVisible}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setCategoryModalVisible(false)}
-      >
-        <View style={styles.categoryModalOverlay}>
-          <View style={styles.categoryModalCard}>
-            <Text style={styles.modalTitle}>Categoría</Text>
-            <ScrollView style={styles.categoryModalList}>
-              <Pressable
-                style={[
-                  styles.categoryRow,
-                  editCategoryId === null && styles.categoryRowSelected,
-                ]}
-                onPress={() => {
-                  setEditCategoryId(null);
-                  setCategoryModalVisible(false);
-                }}
-              >
-                <View style={[styles.categoryDot, { backgroundColor: '#666' }]} />
-                <Text style={styles.categoryRowText}>Sin categoría</Text>
-              </Pressable>
-              {categories.map((cat) => (
-                <Pressable
-                  key={cat.id}
-                  style={[
-                    styles.categoryRow,
-                    cat.parentCategoryId ? styles.categoryRowSub : null,
-                    editCategoryId === cat.id && styles.categoryRowSelected,
-                  ]}
-                  onPress={() => {
-                    setEditCategoryId(cat.id);
-                    setCategoryModalVisible(false);
-                  }}
-                >
-                  <View style={[styles.categoryDot, { backgroundColor: cat.color }]} />
-                  <Text style={styles.categoryRowText}>{cat.name}</Text>
-                </Pressable>
-              ))}
-            </ScrollView>
-            <Pressable
-              style={styles.cancelButton}
-              onPress={() => setCategoryModalVisible(false)}
-            >
-              <Text style={styles.cancelText}>Cancelar</Text>
-            </Pressable>
-          </View>
-        </View>
-      </Modal>
 
       <SplitModal
         visible={splitModalVisible}
@@ -591,10 +413,6 @@ const styles = StyleSheet.create({
     textAlign: 'right',
     flex: 1,
     marginLeft: 16,
-  },
-  metaCategory: {
-    flexDirection: 'row',
-    alignItems: 'center',
   },
   categoryDot: {
     width: 10,
